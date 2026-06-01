@@ -2,7 +2,7 @@ name: Update openstash formula
 
 on:
   schedule:
-    - cron: '0 9 * * 5'  # Every Friday at 9am UTC
+    - cron: '0 9 1 * *'  # First day of every month at 9am UTC
   workflow_dispatch:
 
 jobs:
