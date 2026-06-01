@@ -1,0 +1,130 @@
+name: Update openstash formula
+
+on:
+  schedule:
+    - cron: '0 9 * * 5'  # Every Friday at 9am UTC
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get versions
+        id: versions
+        run: |
+          LATEST=$(curl -sf \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/MiguelAPerez/openstash/releases/latest \
+            | jq -r '.tag_name' | sed 's/^v//')
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            echo "Could not fetch latest release" >&2
+            exit 1
+          fi
+
+          CURRENT=$(grep -oP '(?<=version ")[^"]+' Formula/openstash.rb | head -1)
+
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: No update needed
+        if: steps.versions.outputs.update_needed == 'false'
+        run: echo "Formula is already at the latest version (${{ steps.versions.outputs.current }}). Nothing to do."
+
+      - name: Check for existing PR
+        if: steps.versions.outputs.update_needed == 'true'
+        id: existing_pr
+        run: |
+          VERSION="${{ steps.versions.outputs.latest }}"
+          COUNT=$(gh pr list \
+            --state open \
+            --search "Update openstash to v${VERSION}" \
+            --json number \
+            --jq 'length')
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download binaries and compute SHA256s
+        if: steps.versions.outputs.update_needed == 'true' && steps.existing_pr.outputs.count == '0'
+        id: hashes
+        run: |
+          VERSION="${{ steps.versions.outputs.latest }}"
+          BASE="https://github.com/MiguelAPerez/openstash/releases/download/v${VERSION}"
+
+          get_sha256() { curl -sL "$1" | sha256sum | awk '{print $1}'; }
+
+          echo "darwin_arm64=$(get_sha256 "${BASE}/openstash_darwin_arm64.tar.gz")" >> $GITHUB_OUTPUT
+          echo "darwin_amd64=$(get_sha256 "${BASE}/openstash_darwin_amd64.tar.gz")" >> $GITHUB_OUTPUT
+          echo "linux_arm64=$(get_sha256  "${BASE}/openstash_linux_arm64.tar.gz")"  >> $GITHUB_OUTPUT
+          echo "linux_amd64=$(get_sha256  "${BASE}/openstash_linux_amd64.tar.gz")"  >> $GITHUB_OUTPUT
+
+      - name: Update formula
+        if: steps.versions.outputs.update_needed == 'true' && steps.existing_pr.outputs.count == '0'
+        run: |
+          python3 - <<'EOF'
+          import re, os
+
+          version   = os.environ["VERSION"]
+          sha256s   = [
+              os.environ["DARWIN_ARM64"],
+              os.environ["DARWIN_AMD64"],
+              os.environ["LINUX_ARM64"],
+              os.environ["LINUX_AMD64"],
+          ]
+
+          with open("Formula/openstash.rb") as f:
+              content = f.read()
+
+          content = re.sub(r'version "\S+"', f'version "{version}"', content)
+
+          counter = [0]
+          def replace_sha(m):
+              v = sha256s[counter[0]]
+              counter[0] += 1
+              return f'sha256 "{v}"'
+
+          content = re.sub(r'sha256 "\S+"', replace_sha, content)
+
+          with open("Formula/openstash.rb", "w") as f:
+              f.write(content)
+          EOF
+        env:
+          VERSION:      ${{ steps.versions.outputs.latest }}
+          DARWIN_ARM64: ${{ steps.hashes.outputs.darwin_arm64 }}
+          DARWIN_AMD64: ${{ steps.hashes.outputs.darwin_amd64 }}
+          LINUX_ARM64:  ${{ steps.hashes.outputs.linux_arm64 }}
+          LINUX_AMD64:  ${{ steps.hashes.outputs.linux_amd64 }}
+
+      - name: Create pull request
+        if: steps.versions.outputs.update_needed == 'true' && steps.existing_pr.outputs.count == '0'
+        run: |
+          VERSION="${{ steps.versions.outputs.latest }}"
+          BRANCH="update/openstash-v${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add Formula/openstash.rb
+          git commit -m "Update openstash to v${VERSION}"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "Update openstash to v${VERSION}" \
+            --body "Automated weekly update of the openstash formula from v${{ steps.versions.outputs.current }} to v${VERSION}." \
+            --base main \
+            --head "$BRANCH"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
