@@ -216,7 +216,7 @@ class CommandRunner:
         )
 
 
-def has_open_pr(runner: CommandRunner, name: str, version: str) -> bool:
+def has_open_pr(runner: CommandRunner, name: str, version: str) -> Optional[bool]:
     """Whether an open PR for this formula+version already exists.
 
     Returns True/False when ``gh`` reports a count, or None when the check
