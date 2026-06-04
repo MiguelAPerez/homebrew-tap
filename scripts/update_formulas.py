@@ -51,8 +51,12 @@ def parse_version(content: str) -> Optional[str]:
 
 
 def normalize_version(tag: str) -> str:
-    """Strip a leading ``v`` from a release tag (``v1.2.3`` -> ``1.2.3``)."""
-    return tag.lstrip("v")
+    """Strip a single leading ``v`` from a release tag (``v1.2.3`` -> ``1.2.3``).
+
+    Only one leading ``v`` is removed, so tags that merely start with ``v``
+    (e.g. ``version-1.0``) are left intact.
+    """
+    return tag[1:] if tag.startswith("v") else tag
 
 
 def url_templates(content: str) -> list[str]:
@@ -213,12 +217,20 @@ class CommandRunner:
 
 
 def has_open_pr(runner: CommandRunner, name: str, version: str) -> bool:
-    """Return True if an open PR for this formula+version already exists."""
+    """Whether an open PR for this formula+version already exists.
+
+    Returns True/False when ``gh`` reports a count, or None when the check
+    itself could not be performed (e.g. auth/API failure) so the caller can
+    skip rather than risk creating a duplicate. A failed call is already
+    recorded by the runner, so the job will still go red.
+    """
     result = runner.gh(
         "pr", "list", "--state", "open",
         "--search", f"Update {name} to v{version}",
         "--json", "number", "--jq", "length",
     )
+    if result.returncode != 0:
+        return None
     count = (result.stdout or "").strip()
     return count.isdigit() and int(count) > 0
 
@@ -233,12 +245,20 @@ def create_pull_requests(
     for upd in updates:
         branch = f"update/{upd.name}-v{upd.new_version}"
 
-        if has_open_pr(runner, upd.name, upd.new_version):
+        existing = has_open_pr(runner, upd.name, upd.new_version)
+        if existing is None:
+            log(f"[{upd.name}] could not verify existing PRs, skipping")
+            continue
+        if existing:
             log(f"[{upd.name}] PR already open, skipping")
             continue
 
-        runner.git("checkout", base)
-        runner.git("checkout", "-b", branch)
+        if runner.git("checkout", base).returncode != 0:
+            log(f"[{upd.name}] could not check out {base}, skipping")
+            continue
+        if runner.git("checkout", "-b", branch).returncode != 0:
+            log(f"[{upd.name}] could not create branch {branch}, skipping")
+            continue
 
         upd.path.write_text(upd.new_content)
         runner.git("add", str(upd.path))
@@ -285,15 +305,26 @@ def api_get(url: str, token: str, run: Runner = subprocess.run) -> Optional[dict
     )
     if result.returncode != 0 or not result.stdout:
         return None
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        # Non-JSON 200 body (proxy HTML, rate-limit page, ...) — skip cleanly
+        # instead of crashing the whole run.
+        return None
 
 
 def sha256_of_url(url: str, run: Runner = subprocess.run) -> Optional[str]:
-    """Download ``url`` and return its sha256 hex digest, or None on failure."""
+    """Download ``url`` and return its sha256 hex digest, or None on failure.
+
+    Uses ``curl -f`` and ``pipefail`` so a 404/error response fails the
+    pipeline rather than hashing an error body into the formula.
+    """
     result = run(
-        f"curl -sL {shlex.quote(url)} | sha256sum",
-        shell=True, capture_output=True, text=True,
+        f"set -o pipefail; curl -fsSL {shlex.quote(url)} | sha256sum",
+        shell=True, capture_output=True, text=True, executable="/bin/bash",
     )
+    if result.returncode != 0:
+        return None
     parts = (result.stdout or "").split()
     return parts[0] if parts else None
 

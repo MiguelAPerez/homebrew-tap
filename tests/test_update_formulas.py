@@ -50,7 +50,11 @@ def test_parse_version():
     assert uf.parse_version(FORMULA) == "0.1.2"
 
 
-@pytest.mark.parametrize("tag,expected", [("v1.2.3", "1.2.3"), ("1.2.3", "1.2.3")])
+@pytest.mark.parametrize("tag,expected", [
+    ("v1.2.3", "1.2.3"),
+    ("1.2.3", "1.2.3"),
+    ("vv1.2.3", "v1.2.3"),  # only ONE leading "v" is removed (not a greedy lstrip)
+])
 def test_normalize_version(tag, expected):
     assert uf.normalize_version(tag) == expected
 
@@ -180,7 +184,8 @@ class FakeRun:
         self.results = results
         self.calls = []
 
-    def __call__(self, argv, capture_output=True, text=True, env=None, shell=False):
+    def __call__(self, argv, capture_output=True, text=True, env=None,
+                 shell=False, executable=None):
         self.calls.append(argv)
         key = argv if isinstance(argv, str) else " ".join(argv)
         for needle, (rc, out, err) in self.results.items():
@@ -212,6 +217,12 @@ def test_has_open_pr_true_and_false():
     none_runner = uf.CommandRunner("t", run=FakeRun({"pr list": (0, "0\n", "")}), log=lambda _m: None)
     assert uf.has_open_pr(open_runner, "openstash", "0.2.0") is True
     assert uf.has_open_pr(none_runner, "openstash", "0.2.0") is False
+
+
+def test_has_open_pr_returns_none_when_check_fails():
+    runner = uf.CommandRunner("t", run=FakeRun({"pr list": (1, "", "API down")}), log=lambda _m: None)
+    assert uf.has_open_pr(runner, "openstash", "0.2.0") is None
+    assert runner.failures == ["gh pr"]  # recorded -> job goes red
 
 
 def test_create_pull_requests_happy_path(tmp_path):
@@ -271,6 +282,43 @@ def test_create_pull_requests_skips_when_pr_already_open(tmp_path):
     assert not any("checkout" in " ".join(c) for c in run.calls)  # no branch work
 
 
+def test_create_pull_requests_skips_when_pr_check_unverifiable(tmp_path):
+    """If `gh pr list` fails we must not branch/commit/push blindly."""
+    f = tmp_path / "openstash.rb"
+    f.write_text(FORMULA)
+    upd = uf.Update(f, "openstash", "0.1.2", "0.2.0", FORMULA)
+
+    logs = []
+    run = FakeRun({"pr list": (1, "", "API down")})
+    runner = uf.CommandRunner("tok", run=run, log=logs.append)
+
+    uf.create_pull_requests([upd], runner, log=logs.append)
+
+    assert runner.failures == ["gh pr"]  # job goes red
+    assert any("could not verify existing PRs" in m for m in logs)
+    assert not any("checkout" in " ".join(c) for c in run.calls)  # no branch work
+
+
+def test_create_pull_requests_skips_when_checkout_fails(tmp_path):
+    """A failed checkout must abort before writing/committing/pushing."""
+    f = tmp_path / "openstash.rb"
+    original = FORMULA
+    f.write_text(original)
+    upd = uf.Update(f, "openstash", "0.1.2", "0.2.0", FORMULA.replace("0.1.2", "0.2.0"))
+
+    logs = []
+    run = FakeRun({"pr list": (0, "0\n", ""), "checkout": (1, "", "cannot checkout")})
+    runner = uf.CommandRunner("tok", run=run, log=logs.append)
+
+    uf.create_pull_requests([upd], runner, log=logs.append)
+
+    assert runner.failures == ["git checkout"]
+    assert f.read_text() == original  # file was NOT modified
+    assert any("could not check out" in m for m in logs)
+    assert not any("commit" in " ".join(c) for c in run.calls)
+    assert not any("push" in " ".join(c) for c in run.calls)
+
+
 def test_create_pull_requests_skips_pr_when_push_fails(tmp_path):
     f = tmp_path / "openstash.rb"
     f.write_text(FORMULA)
@@ -299,6 +347,12 @@ def test_api_get_returns_none_on_curl_failure():
     assert uf.api_get("https://api/x", "tok", run=run) is None
 
 
+def test_api_get_returns_none_on_non_json_body():
+    # HTTP 200 but a proxy/rate-limit HTML page instead of JSON.
+    run = FakeRun({"curl": (0, "<html>rate limited</html>", "")})
+    assert uf.api_get("https://api/x", "tok", run=run) is None
+
+
 def test_sha256_of_url_extracts_digest():
     run = FakeRun({"sha256sum": (0, "deadbeef  -\n", "")})
     assert uf.sha256_of_url("https://x/a.tar.gz", run=run) == "deadbeef"
@@ -307,3 +361,9 @@ def test_sha256_of_url_extracts_digest():
 def test_sha256_of_url_returns_none_on_empty():
     run = FakeRun({"sha256sum": (0, "", "")})
     assert uf.sha256_of_url("https://x/a.tar.gz", run=run) is None
+
+
+def test_sha256_of_url_returns_none_on_download_failure():
+    # curl -f + pipefail: a 404 fails the pipeline, so no bogus hash is returned.
+    run = FakeRun({"sha256sum": (22, "", "curl: (22) 404")})
+    assert uf.sha256_of_url("https://x/missing.tar.gz", run=run) is None
