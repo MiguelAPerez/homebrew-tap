@@ -43,12 +43,22 @@ jobs:
               )
               return r.stdout.split()[0] if r.stdout.strip() else None
 
-          def git(*args):
-              return subprocess.run(["git", *args], capture_output=True, text=True)
+          failures = []  # collected so the job fails loudly at the end
 
-          def gh(*args):
-              return subprocess.run(["gh", *args], capture_output=True, text=True,
-                                    env={**os.environ, "GH_TOKEN": TOKEN})
+          def git(*args, check=True):
+              r = subprocess.run(["git", *args], capture_output=True, text=True)
+              if check and r.returncode != 0:
+                  print(f"::error::git {' '.join(args)} failed:\n{r.stderr.strip()}")
+                  failures.append(f"git {args[0]}")
+              return r
+
+          def gh(*args, check=True):
+              r = subprocess.run(["gh", *args], capture_output=True, text=True,
+                                 env={**os.environ, "GH_TOKEN": TOKEN})
+              if check and r.returncode != 0:
+                  print(f"::error::gh {' '.join(args)} failed:\n{r.stderr.strip()}")
+                  failures.append(f"gh {args[0]}")
+              return r
 
           updates = []  # (path, new_content, formula_name, old_ver, new_ver)
 
@@ -129,15 +139,24 @@ jobs:
               formula.write_text(new_content)
               git("add", str(formula))
               git("commit", "-m", f"Update {name} to v{new_ver}")
-              git("push", "origin", branch)
+              if git("push", "origin", branch).returncode != 0:
+                  print(f"[{name}] push failed, not creating PR")
+                  continue
 
-              gh("pr", "create",
-                 "--title", f"Update {name} to v{new_ver}",
-                 "--body",  f"Automated monthly update of {name} from v{old_ver} to v{new_ver}.",
-                 "--base",  "main",
-                 "--head",  branch)
+              r = gh("pr", "create",
+                     "--title", f"Update {name} to v{new_ver}",
+                     "--body",  f"Automated monthly update of {name} from v{old_ver} to v{new_ver}.",
+                     "--base",  "main",
+                     "--head",  branch)
 
-              print(f"[{name}] PR created: {old_ver} -> {new_ver}")
+              if r.returncode == 0:
+                  print(f"[{name}] PR created: {old_ver} -> {new_ver} {r.stdout.strip()}")
+              else:
+                  print(f"[{name}] PR creation FAILED for {old_ver} -> {new_ver} "
+                        f"(branch {branch} was pushed; open the PR manually)")
+
+          if failures:
+              raise SystemExit(f"{len(failures)} command(s) failed: {', '.join(failures)}")
 
           PYEOF
         env:
