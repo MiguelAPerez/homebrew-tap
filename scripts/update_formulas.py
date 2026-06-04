@@ -264,7 +264,13 @@ def create_pull_requests(
         runner.git("add", str(upd.path))
         runner.git("commit", "-m", f"Update {upd.name} to v{upd.new_version}")
 
-        if runner.git("push", "origin", branch).returncode != 0:
+        # Force-push: this branch is owned exclusively by this automation and
+        # is regenerated deterministically each run. A previous run may have
+        # left the remote branch behind (PR creation was blocked, or the PR was
+        # closed without deleting the branch). Without --force the fresh commit
+        # is rejected as a non-fast-forward ("fetch first") and the job fails
+        # forever on that version.
+        if runner.git("push", "--force", "origin", branch).returncode != 0:
             log(f"[{upd.name}] push failed, not creating PR")
             continue
 

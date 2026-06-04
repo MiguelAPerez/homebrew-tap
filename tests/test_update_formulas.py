@@ -247,6 +247,34 @@ def test_create_pull_requests_happy_path(tmp_path):
                for c in run.calls)
 
 
+def test_create_pull_requests_force_pushes_stale_branch(tmp_path):
+    """Regression: a leftover remote branch must not wedge the job forever.
+
+    If a prior run pushed the update branch but couldn't open the PR (or the
+    PR was later closed without deleting the branch), the next run makes a
+    fresh commit that isn't a descendant of the remote tip. A plain push is
+    rejected "fetch first"; the branch is bot-owned and regenerated each run,
+    so the push must force-overwrite it.
+    """
+    f = tmp_path / "openstash.rb"
+    f.write_text(FORMULA)
+    upd = uf.Update(f, "openstash", "0.1.2", "0.2.0", FORMULA.replace("0.1.2", "0.2.0"))
+
+    logs = []
+    run = FakeRun({
+        "pr list": (0, "0\n", ""),
+        "pr create": (0, "https://github.com/x/y/pull/7\n", ""),
+    })
+    runner = uf.CommandRunner("tok", run=run, log=logs.append)
+
+    uf.create_pull_requests([upd], runner, log=logs.append)
+
+    push_calls = [c for c in run.calls if "push" in " ".join(c)]
+    assert push_calls, "expected a push to be attempted"
+    assert all("--force" in c for c in push_calls)
+    assert runner.failures == []
+
+
 def test_create_pull_requests_reports_failure_loudly(tmp_path):
     """Regression test: a failed `gh pr create` must NOT look like success."""
     f = tmp_path / "openstash.rb"
