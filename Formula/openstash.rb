@@ -1,30 +1,30 @@
 class Openstash < Formula
   desc "Cache OpenAPI specs locally for fast endpoint lookup"
   homepage "https://github.com/MiguelAPerez/openstash"
-  version "0.4.0"
+  version "0.5.0"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/MiguelAPerez/openstash/releases/download/v#{version}/openstash_darwin_arm64.tar.gz"
-      sha256 "13cbba4acd7ae3e2ee091d1cb49acc5ffe52a9f6d028c4951de371eb0bf64f95"
+      sha256 "7d0015807ef7135dcdb69f45ef5e3efea6314e46b42afc8462e44621ced3203b"
     end
 
     on_intel do
       url "https://github.com/MiguelAPerez/openstash/releases/download/v#{version}/openstash_darwin_amd64.tar.gz"
-      sha256 "59a1586827c3b2ee44104b37a7e1cf95be9c7e5bd771151dc2293df79f1f432c"
+      sha256 "e8c9a89a77474d1bb45c419bc3a2dc59ce37b38825e42281d5e69cc997a348e7"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/MiguelAPerez/openstash/releases/download/v#{version}/openstash_linux_arm64.tar.gz"
-      sha256 "7611702bc5061144b3eab3b9506c0027df99c27d935bab05711ab3541f7b04bc"
+      sha256 "36e0c35f24e744cb35080ef2271a67276f0a08012e6e2fa2be1cc6eb08fea3ad"
     end
 
     on_intel do
       url "https://github.com/MiguelAPerez/openstash/releases/download/v#{version}/openstash_linux_amd64.tar.gz"
-      sha256 "dfe4127fb32518fa854598e50a99498e090d261c22a8b30de7f6f9f00bd89ec8"
+      sha256 "4bec52ac23dab8086a6dc8b563b41e4b460d1892b0921c340b2e3dd700952289"
     end
   end
 
